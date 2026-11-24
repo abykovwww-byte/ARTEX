@@ -487,36 +487,131 @@ func TestRewriteRequestErrorRedactedAndCleared(t *testing.T) {
 	}
 }
 
-// RequestError never switches the host of a rewritten request to passthrough,
-// records the rules' last error, and still does so for a request no rule changed.
-func TestRewriteRequestErrorKeepsInterception(t *testing.T) {
-	tr, _ := openTraffic(t)
-	s := tr.proxy.Addons[0].(*sink)
-	errs := &rewrite.ErrorLog{}
-	tr.SetRewriteRules(rules(t, nil, errs, rewrite.Rule{ID: 9, Phase: rewrite.PhaseRequest, Matchers: rewrite.Matchers{Host: "rw.example"},
-		Actions: []rewrite.Action{{Type: rewrite.ActionSetHeader, Name: "X-A", Value: "1"}}}))
-	protoErr := errors.New("http2: protocol error")
+// Header-only rewrites allow proxy-caused failures to release the host, while
+// body/URL/method rewrites keep interception. All still record the rule error.
+func TestRewriteRequestErrorPassthroughSplit(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		actions     []rewrite.Action
+		err         error
+		passthrough bool
+	}{
+		{"header protocol error", []rewrite.Action{{Type: rewrite.ActionSetHeader, Name: "X-A", Value: "1"}}, errors.New("http2: protocol error at /private-path?token=secret"), true},
+		{"header target error", []rewrite.Action{{Type: rewrite.ActionSetHeader, Name: "X-A", Value: "1"}}, errors.New("connection refused"), false},
+		{"body", []rewrite.Action{{Type: rewrite.ActionReplaceBody, Regex: "original", Value: "changed"}}, errors.New("http2: protocol error"), false},
+		{"url", []rewrite.Action{{Type: rewrite.ActionSetPathQuery, Value: "/changed"}}, errors.New("http2: protocol error"), false},
+		{"method", []rewrite.Action{{Type: rewrite.ActionSetMethod, Value: "PUT"}}, errors.New("http2: protocol error"), false},
+		{"header and body", []rewrite.Action{{Type: rewrite.ActionSetHeader, Name: "X-A", Value: "1"}, {Type: rewrite.ActionReplaceBody, Regex: "original", Value: "changed"}}, errors.New("http2: protocol error"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, _ := openTraffic(t)
+			logs := captureLog(t)
+			s := tr.proxy.Addons[0].(*sink)
+			errs := &rewrite.ErrorLog{}
+			tr.SetRewriteRules(rules(t, nil, errs, rewrite.Rule{ID: 9, Phase: rewrite.PhaseRequest, Matchers: rewrite.Matchers{Host: "rw.example"},
+				Actions: tc.actions}))
+			protoErr := errors.New("http2: protocol error")
 
-	f := withID(newFlow("rw.example", "GET", "/", nil, nil), 1)
-	s.Request(f)
-	if f.Request.Header.Get("X-A") != "1" {
-		t.Fatal("request not rewritten")
+			f := withID(newFlow("rw.example", "POST", "/private-path?token=secret", []byte("original"), nil), 1)
+			s.Request(f)
+			if snap := tr.snaps.slot(keyOf(f)); snap == nil || !snap.requestRewritten() {
+				t.Fatal("request not rewritten")
+			}
+			s.RequestError(f, tc.err)
+			if flagged := tr.tunneling("rw.example"); flagged != tc.passthrough {
+				t.Fatalf("passthrough=%v want %v", flagged, tc.passthrough)
+			}
+			if e, ok := errs.Get(9); !ok || e.Class != rewrite.ErrClassTransport {
+				t.Fatalf("last error %+v %v", e, ok)
+			}
+			message := "host stays intercepted"
+			if len(tc.actions) == 1 && tc.actions[0].Type == rewrite.ActionSetHeader {
+				message = "header-only rewritten request failed, checking passthrough"
+			}
+			if out := logs.String(); !strings.Contains(out, message) || !strings.Contains(out, "host=rw.example") || !strings.Contains(out, "rules=[9]") || !strings.Contains(out, "class=transport_error") || strings.Contains(out, "private-path") || strings.Contains(out, "secret") {
+				t.Fatalf("rewrite error log: %q", out)
+			}
+			g := withID(newFlow("plain.example", "GET", "/", nil, nil), 2)
+			s.Request(g)
+			s.RequestError(g, protoErr)
+			if _, flagged := tr.pass.Load("plain.example"); !flagged {
+				t.Fatal("an unrewritten request no longer flags its host")
+			}
+			if e, tb := tr.snaps.counts(); e != 0 || tb != 0 {
+				t.Fatalf("table holds %d entries, %d tombstones", e, tb)
+			}
+		})
 	}
-	s.RequestError(f, protoErr)
-	if _, flagged := tr.pass.Load("rw.example"); flagged {
-		t.Fatal("a rewritten request flagged its host for passthrough")
-	}
-	if e, ok := errs.Get(9); !ok || e.Class != rewrite.ErrClassTransport {
-		t.Fatalf("last error %+v %v", e, ok)
-	}
-	g := withID(newFlow("plain.example", "GET", "/", nil, nil), 2)
-	s.Request(g)
-	s.RequestError(g, protoErr)
-	if _, flagged := tr.pass.Load("plain.example"); !flagged {
-		t.Fatal("an unrewritten request no longer flags its host")
-	}
-	if e, tb := tr.snaps.counts(); e != 0 || tb != 0 {
-		t.Fatalf("table holds %d entries, %d tombstones", e, tb)
+}
+
+// A malformed upstream reply invokes RequestError through the real MITM proxy.
+// The next CONNECT must tunnel a header-only rule, while a body rule still runs.
+func TestRewriteRequestErrorHTTPFallback(t *testing.T) {
+	for _, headerOnly := range []bool{true, false} {
+		t.Run(fmt.Sprintf("headerOnly=%v", headerOnly), func(t *testing.T) {
+			var calls atomic.Int32
+			observed := make(chan string, 2)
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				observed <- r.Header.Get("X-A") + ":" + string(body)
+				if calls.Add(1) == 1 {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer conn.Close()
+					io.WriteString(conn, "malformed response\r\n\r\n")
+					return
+				}
+				io.WriteString(w, "ok")
+			}))
+			defer upstream.Close()
+			tr, _, proxyURL := startProxy(t)
+			action := rewrite.Action{Type: rewrite.ActionSetHeader, Name: "X-A", Value: "rewritten"}
+			if !headerOnly {
+				action = rewrite.Action{Type: rewrite.ActionReplaceBody, Regex: "original", Value: "changed"}
+			}
+			tr.SetRewriteRules(rules(t, nil, nil, rewrite.Rule{ID: 1, Phase: rewrite.PhaseRequest, Actions: []rewrite.Action{action}}))
+			client := proxyClient(t, tr, proxyURL)
+			client.Timeout = 5 * time.Second
+			transport := client.Transport.(*http.Transport)
+			// Both the MITM CA and the local upstream's self-signed cert are used.
+			transport.TLSClientConfig.InsecureSkipVerify = true
+			transport.DisableKeepAlives = true
+			defer transport.CloseIdleConnections()
+			for i := range 2 {
+				resp, err := client.Post(localhostURL(upstream.URL)+"/test", "text/plain", strings.NewReader("original"))
+				if err != nil {
+					if i != 0 {
+						t.Fatal(err)
+					}
+				} else {
+					body, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					if i == 0 && resp.StatusCode != http.StatusBadGateway {
+						t.Fatalf("first response=%d", resp.StatusCode)
+					}
+					if i == 1 && (resp.StatusCode != http.StatusOK || string(body) != "ok") {
+						t.Fatalf("second response=%d %q", resp.StatusCode, body)
+					}
+				}
+				// The passthrough mark is set by the proxy's RequestError hook,
+				// which can run just after the client sees the failed request.
+				if headerOnly {
+					waitFor(t, "header-only passthrough mark", func() bool { return tr.tunneling("localhost") })
+				} else if tr.tunneling("localhost") {
+					t.Fatal("body rewrite released the host to passthrough")
+				}
+			}
+			first, second := <-observed, <-observed
+			if headerOnly && (first != "rewritten:original" || second != ":original") {
+				t.Fatalf("header rewrite did not fall back: first=%q second=%q", first, second)
+			}
+			if !headerOnly && (first != ":changed" || second != ":changed") {
+				t.Fatalf("body rewrite lost interception: first=%q second=%q", first, second)
+			}
+		})
 	}
 }
 
@@ -1041,7 +1136,7 @@ func TestRewriteIDCollisionClearsTrace(t *testing.T) {
 		},
 		"recordStreamStart": func(tr *Traffic) {
 			u, _ := url.Parse("https://c.example/ws")
-			f := &mproxy.Flow{Request: &mproxy.Request{Method: "GET", URL: u, Proto: "HTTP/1.1", Header: http.Header{}}, WebScoket: &mproxy.WebSocketData{}}
+			f := &mproxy.Flow{Request: &mproxy.Request{Method: "GET", URL: u, Proto: "HTTP/1.1", Header: http.Header{}}, WebSocket: &mproxy.WebSocketData{}}
 			tr.proxy.Addons[0].(*sink).WebSocketStart(f)
 		},
 	}

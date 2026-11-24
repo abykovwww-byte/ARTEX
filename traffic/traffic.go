@@ -623,7 +623,7 @@ func (t *Traffic) maybePassthrough(f *mproxy.Flow, err error) {
 	}
 	until := time.Now().Add(passthroughTTL)
 	if _, loaded := t.pass.LoadOrStore(host, until); !loaded {
-		slog.Warn("[traffic] MITM failed, falling back to passthrough", "host", host, "ttl", passthroughTTL, "err", err)
+		slog.Warn("[traffic] MITM failed, falling back to passthrough", "host", host, "ttl", passthroughTTL, "class", rewrite.ErrClassTransport)
 	}
 }
 

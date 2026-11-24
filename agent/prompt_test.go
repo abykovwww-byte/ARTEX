@@ -5,6 +5,39 @@ import (
 	"testing"
 )
 
+func TestEnvironmentBlocksSurvivePromptOverrides(t *testing.T) {
+	t.Cleanup(func() { SetPromptOverride(nil) })
+	for _, custom := range []bool{false, true} {
+		SetPromptOverride(nil)
+		if custom {
+			SetPromptOverride(func(string) (string, bool) { return "CUSTOM BODY", true })
+		}
+		planner := plannerSystem("goal", "/data", "/work")
+		if strings.Count(planner, plannerEnvironmentBlock()) != 1 {
+			t.Fatalf("custom=%v: planner environment block missing or duplicated", custom)
+		}
+		for _, path := range []struct{ proxy, ca string }{
+			{"", ""}, {"127.0.0.1:8080", ""}, {"127.0.0.1:8080", "/ca.pem"},
+		} {
+			worker := workerSystem(path.proxy, path.ca, "/data", "/work")
+			if strings.Count(worker, workerEnvironmentBlock()) != 1 {
+				t.Fatalf("custom=%v proxy=%q ca=%q: worker environment block missing or duplicated", custom, path.proxy, path.ca)
+			}
+			for _, fact := range []string{"CONNECT to 80/443", "12345/31337/55555/65001", "CT logs", "Server/Date", "--connect-to", "web.archive.org, CDX", "ask_operator"} {
+				if !strings.Contains(planner, fact) || !strings.Contains(worker, fact) {
+					t.Errorf("environment prompts missing %q", fact)
+				}
+			}
+			if !strings.Contains(worker, "record_coverage with needs_follow_up") || !strings.Contains(worker, "Do not retry") {
+				t.Fatal("worker missing environmental block handling")
+			}
+		}
+		if !strings.Contains(planner, "Never re-dispatch") || !strings.Contains(planner, "emit exactly one intent") {
+			t.Fatal("planner missing environmental block handling")
+		}
+	}
+}
+
 func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	t.Cleanup(func() { SetPromptOverride(nil) })
 
@@ -58,6 +91,9 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	if !strings.Contains(recording, "traffic_search") {
 		t.Fatalf("worker while recording should inject trafficTool: %q", recording)
 	}
+	if !strings.Contains(recording, "An empty HTTP 200 without evidence of an upstream response leaves reachability unknown") {
+		t.Fatalf("worker while recording should explain proxy evidence: %q", recording)
+	}
 	if strings.Contains(recording, "traffic_refs") {
 		t.Fatalf("worker bypassed shared optional evidence policy: %q", recording)
 	}
@@ -79,5 +115,8 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 	if strings.Contains(noProxy, "traffic_search") {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
+	}
+	if !strings.Contains(noProxy, "through TaskOutput using the task ID") {
+		t.Fatalf("worker without proxy should still explain background output access: %q", noProxy)
 	}
 }

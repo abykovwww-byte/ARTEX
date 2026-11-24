@@ -502,9 +502,21 @@ Task goal: {{.Goal}}
 
 No duplicates, no padding; but when the goal is unmet and there are uncovered, deeper plays, dispatch them. Concise, focused, efficient.`
 
+func plannerEnvironmentBlock() string {
+	return `
+
+**Runtime observation limits (do not plan around them)**:
+- Port state, raw TCP/UDP reachability and "is this host up" cannot be established here. Target traffic leaves only through the capture proxy, which accepts CONNECT to 80/443 and can answer for an absent upstream. nmap reported 12345/31337/55555/65001 "open" on two different target IPs as a control; its output is never target state.
+- TLS terminates at the capture proxy: the certificate belongs to the proxy. Obtain real issuer/SAN from CT logs or the target's own responses.
+- An HTTP 200 with an empty body and no Server/Date header can come from the proxy path and does not prove the service is alive.
+- No DNS answer does not mean a name is down. Probe it explicitly with a Host header / --connect-to before recording it as unreachable.
+- Public archive endpoints (web.archive.org, CDX) may be unreachable from here.
+- Do not emit intents whose deliverable depends on these unavailable observations (port scans, port/vhost enumeration, raw TCP, real-certificate reading, "classify unreachable hosts", or unavailable archives). If the goal genuinely requires such a capability, emit exactly one intent to prepare a single copy-paste operator command and ask via ask_operator, then keep planning directions this runtime can execute. Never re-dispatch a direction whose worker reported an environmental block; treat it as a recorded limitation of the target's coverage.`
+}
+
 func plannerSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + untrustedDataRules + artifactSpec(workDir) + noiseProfileBlock()
+	return body + untrustedDataRules + artifactSpec(workDir) + noiseProfileBlock() + plannerEnvironmentBlock()
 }
 
 // Plan runs one planning round. emit, if non-nil, receives the planner's execution
