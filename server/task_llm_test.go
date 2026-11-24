@@ -55,11 +55,18 @@ func accumulateStreamForTest(ctx context.Context, stream func(context.Context, l
 }
 
 // withZeroRetryBackoff sets the same-provider retry backoff to zero for the
-// duration of a (serial) test and returns a restore func for defer.
+// duration of a (serial) test and returns a restore func for defer. The
+// rate-limit ladder is zeroed too, so a retryable-429 case does not sleep
+// through its 5s/10s/20s ladder.
 func withZeroRetryBackoff() func() {
 	prev := sameProviderRetryBackoff
+	prevRate := rateLimitRetryBackoff
 	sameProviderRetryBackoff = func(int) time.Duration { return 0 }
-	return func() { sameProviderRetryBackoff = prev }
+	rateLimitRetryBackoff = func(int) time.Duration { return 0 }
+	return func() {
+		sameProviderRetryBackoff = prev
+		rateLimitRetryBackoff = prevRate
+	}
 }
 
 // flakyThenOKProvider fails its first failCount stream attempts pre-commit

@@ -113,6 +113,24 @@ func (s *reqSnap) appliedRuleIDs() []int64 {
 	return ids
 }
 
+// onlyHeaderChanges is conservative when the original trace was lost.
+func (s *reqSnap) onlyHeaderChanges() bool {
+	if s.tomb {
+		return false
+	}
+	applied := false
+	for _, line := range s.lines {
+		if line.Phase != rewrite.PhaseRequest || line.Outcome != rewrite.OutcomeApplied {
+			continue
+		}
+		if !strings.HasPrefix(line.Field, "header:") {
+			return false
+		}
+		applied = true
+	}
+	return applied
+}
+
 // snapTable holds the slots, keyed by flow id. Its mutex is a leaf lock.
 type snapTable struct {
 	mu          sync.Mutex
@@ -638,8 +656,9 @@ func (s *sink) applyStreamResponse(f *mproxy.Flow, res rewrite.Result) {
 // errors) and not a plain target-unreachable error, the host is tunneled for
 // passthroughTTL: this request has already failed, later requests in the window
 // connect straight through, and the first one after the window tries
-// interception again. A request a rule rewrote never flags its host: the rule,
-// not the interception, may be at fault. Its log names the host, the error class
+// interception again. Body, URL or method rewrites keep the host intercepted:
+// the rule may be at fault. Header-only rewrites allow the usual fallback.
+// Its log names the host, the error class
 // and the rules, never the URL or the error text.
 func (s *sink) RequestError(f *mproxy.Flow, err error) {
 	if f != nil {
@@ -649,8 +668,11 @@ func (s *sink) RequestError(f *mproxy.Flow, err error) {
 			for _, id := range ids {
 				snap.rules.NoteError(id, rewrite.ErrClassTransport)
 			}
-			slog.Warn("[traffic] rewritten request failed, host stays intercepted", "host", snap.host, "rules", ids, "class", rewrite.ErrClassTransport)
-			return
+			if !snap.onlyHeaderChanges() {
+				slog.Warn("[traffic] rewritten request failed, host stays intercepted", "host", snap.host, "rules", ids, "class", rewrite.ErrClassTransport)
+				return
+			}
+			slog.Warn("[traffic] header-only rewritten request failed, checking passthrough", "host", snap.host, "rules", ids, "class", rewrite.ErrClassTransport)
 		}
 	}
 	s.t.maybePassthrough(f, err)

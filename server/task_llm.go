@@ -8,6 +8,7 @@ import (
 	"iter"
 	"log"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,6 +86,17 @@ func isTaskLLMChainExhausted(err error) bool {
 // identify quota, credits, billing balance, or payment exhaustion.
 func isQuotaExhaustedError(err error) bool {
 	return err != nil && agent.IsQuotaExhaustedMessage(err.Error())
+}
+
+var rateLimitStatus = regexp.MustCompile(`(?i)\b(?:status(?:_code)?[\s:=]+|http(?:/\d(?:\.\d)?)?\s+)429\b`)
+
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return rateLimitStatus.MatchString(s) || strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "too many requests") || strings.Contains(s, "concurrency limit")
 }
 
 // Consecutive-failure escalation (ouroboros cost-tier take, #99): quota
@@ -377,11 +389,18 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 			if hooks.recordHealth != nil {
 				hooks.recordHealth(ctx, selection.healthProfileID, false, false, callErr)
 			}
+			retryLimit := retries
+			if isRateLimitError(callErr) && !isQuotaExhaustedError(callErr) && selection.retry.StreamAttempts >= 0 {
+				retryLimit = max(retries, rateLimitAttempts-1)
+			}
 			if callErr != nil && ctx.Err() == nil &&
-				attempt < retries && isRetryableStreamError(callErr) {
+				attempt < retryLimit && isRetryableStreamError(callErr) {
 				backoff := backoffOf(attempt)
+				if isRateLimitError(callErr) {
+					backoff = rateLimitRetryDelay(callErr, attempt)
+				}
 				log.Printf("[task-llm] task %s non-streaming call failed, retrying on the same provider after %v (%d/%d): %v",
-					taskID, backoff, attempt+1, retries, callErr)
+					taskID, backoff, attempt+1, retryLimit, callErr)
 				if sleepCtx(ctx, backoff) {
 					return llm.Message{}, "", total, ctx.Err() // cancelled during backoff → stop
 				}
@@ -395,7 +414,7 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		}
 		// Non-quota failures on a chain profile escalate after a consecutive
 		// streak (#99): same advance path as quota exhaust, truthful reason.
-		if selection.profileID != 0 && !isQuotaExhaustedError(callErr) && ctx.Err() == nil {
+		if selection.profileID != 0 && !isQuotaExhaustedError(callErr) && !isRateLimitError(callErr) && ctx.Err() == nil {
 			if noteLLMCallFailure(taskID, selection.profileID) {
 				cause := fmt.Errorf("profile #%d failed %d consecutive calls (last: %w)", selection.profileID, llmFailStreakThreshold, callErr)
 				transition, markErr := hooks.exhaust(selection, cause)
@@ -513,11 +532,18 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 					}
 					pending = nil
 				}
+				retryLimit := retries
+				if isRateLimitError(streamErr) && !isQuotaExhaustedError(streamErr) && selection.retry.StreamAttempts >= 0 {
+					retryLimit = max(retries, rateLimitAttempts-1)
+				}
 				if streamErr != nil && !committed && ctx.Err() == nil &&
-					attempt < retries && isRetryableStreamError(streamErr) {
+					attempt < retryLimit && isRetryableStreamError(streamErr) {
 					backoff := backoffOf(attempt)
+					if isRateLimitError(streamErr) {
+						backoff = rateLimitRetryDelay(streamErr, attempt)
+					}
 					log.Printf("[task-llm] task %s pre-commit stream failure, retrying on the same provider after %v (%d/%d): %v",
-						taskID, backoff, attempt+1, retries, streamErr)
+						taskID, backoff, attempt+1, retryLimit, streamErr)
 					if sleepCtx(ctx, backoff) {
 						yield(llm.StreamEvent{}, ctx.Err()) // cancelled during backoff → stop
 						return
@@ -539,7 +565,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			// streak (#99), mirroring completeTaskLLM. Escalation only applies to
 			// uncommitted streams: once events reached the caller, replaying on a
 			// new profile could duplicate delivered output, so the error surfaces.
-			if selection.profileID != 0 && !committed && !isQuotaExhaustedError(streamErr) && ctx.Err() == nil {
+			if selection.profileID != 0 && !committed && !isQuotaExhaustedError(streamErr) && !isRateLimitError(streamErr) && ctx.Err() == nil {
 				if noteLLMCallFailure(taskID, selection.profileID) {
 					cause := fmt.Errorf("profile #%d failed %d consecutive calls (last: %w)", selection.profileID, llmFailStreakThreshold, streamErr)
 					transition, markErr := hooks.exhaust(selection, cause)
@@ -623,6 +649,34 @@ func streamEventCommitsOutput(event llm.StreamEvent) bool {
 // faults bubble straight up as model_error with zero retries. As long as not one token has been handed to the caller (!committed), replaying the exact same request duplicates no model output or tool side effects, so this adds a same-provider backoff retry layer to absorb such jitter before the whole intent re-runs.
 // Overridable by an LLM profile's retry overrides / the global retry policy.
 const sameProviderStreamRetries = 2
+
+// rateLimitAttempts is the minimum total attempts for a pre-commit
+// rate-limit failure (429 / workspace concurrency), so the ladder outlasts a
+// saturated workspace instead of burning the default 0.5s/1s retries.
+// It only raises the budget: a profile's explicit larger StreamAttempts wins,
+// and a negative StreamAttempts (retries disabled) is still honoured.
+const rateLimitAttempts = 4
+
+var rateLimitRetryBackoff = func(attempt int) time.Duration {
+	if attempt >= 3 {
+		return 30 * time.Second
+	}
+	return 5 * time.Second * (1 << max(attempt, 0))
+}
+
+var retryAfterSeconds = regexp.MustCompile(`(?i)\bretry-after\s*:\s*([+-]?\d+)\b`)
+
+func rateLimitRetryDelay(err error, attempt int) time.Duration {
+	if err != nil {
+		if match := retryAfterSeconds.FindStringSubmatch(err.Error()); match != nil {
+			seconds, parseErr := strconv.ParseInt(match[1], 10, 64)
+			if parseErr == nil || errors.Is(parseErr, strconv.ErrRange) {
+				return time.Duration(min(max(seconds, 1), 60)) * time.Second
+			}
+		}
+	}
+	return rateLimitRetryBackoff(attempt)
+}
 
 // sameProviderRetryBackoff is the [default] backoff before retry attempt #attempt
 // (0.5s, 1s…, capped at 4s) — same style as the SDK's exponential ladder but with a

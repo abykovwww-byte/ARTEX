@@ -306,7 +306,20 @@ func workerTrafficBlock(recording bool) string {
 	if !recording {
 		return ""
 	}
-	return "\n\n**Traffic tools**:\n- traffic_search / traffic_get / traffic_blob / traffic_messages: review responses, find already-visited resources — **check the traffic first, don't curl the same URL twice**. traffic_search **requires a host** and by default returns only 3 ultra-light index entries (id/method/url/status/resp_len, no response content) — explicitly raise limit when you need more; body_contains does full-text search in request/response bodies (at least 3 characters; supports substrings and CJK text, e.g. for passwords/keys/errors/internal addresses); to see one entry's raw content use traffic_get(id) — oversized bodies show as @blob sha256:<hash>, fetched in segments with traffic_blob(hash). WebSocket (status 101) and SSE (text/event-stream) records are captured too: traffic_get shows the handshake, and traffic_messages(id) lists their messages in order with direction and type."
+	return "\n\n**Traffic tools**:\n- traffic_search / traffic_get / traffic_blob / traffic_messages: review responses, find already-visited resources — **check the traffic first, don't curl the same URL twice**. traffic_search **requires a host** and by default returns only 3 ultra-light index entries (id/method/url/status/resp_len, no response content) — explicitly raise limit when you need more; body_contains does full-text search in request/response bodies (at least 3 characters; supports substrings and CJK text, e.g. for passwords/keys/errors/internal addresses); to see one entry's raw content use traffic_get(id) — oversized bodies show as @blob sha256:<hash>, fetched in segments with traffic_blob(hash). WebSocket (status 101) and SSE (text/event-stream) records are captured too: traffic_get shows the handshake, and traffic_messages(id) lists their messages in order with direction and type." +
+		"\n- Attribute CONNECT acknowledgements and interception certificates to the proxy. An empty HTTP 200 without evidence of an upstream response leaves reachability unknown. If the available network path cannot distinguish a proxy response from an upstream response, report the environment limitation and leave the service state unknown."
+}
+
+func workerEnvironmentBlock() string {
+	return `
+
+**Runtime observation limits**:
+- Do not infer port state, raw TCP/UDP reachability or "is this host up" here. Target traffic leaves only through the capture proxy, which accepts CONNECT to 80/443 and can answer for an absent upstream. nmap reported 12345/31337/55555/65001 "open" on two different target IPs as a control; never record its output as target state.
+- TLS terminates at the capture proxy: the certificate you read belongs to the proxy. Obtain real issuer/SAN from CT logs or the target's own responses.
+- An HTTP 200 with an empty body and no Server/Date header can come from the proxy path; do not use it as proof the service is alive.
+- No DNS answer does not mean a name is down. Probe it explicitly with a Host header / --connect-to before recording it as unreachable.
+- Public archive endpoints (web.archive.org, CDX) may be unreachable from here.
+- When any of these limits blocks a step, record the limitation once as a fact and/or record_coverage with needs_follow_up naming the exact blocker. Do not retry the blocked step; move to the next direction. If the capability is genuinely required, use ask_operator once with one copy-paste command and exactly what to paste back.`
 }
 
 // artifactSpec is section [C]: the code-owned, non-editable tail appended to every
@@ -320,7 +333,8 @@ func artifactSpec(dir string) string {
 // pre-created by the engine (ensureRunDir), so it just writes relative paths there
 // — no manual mkdir, no cross-worker name collisions.
 func workerArtifactSpec(runDir string) string {
-	return "\n\n**Intermediate artifact output rules**: all intermediate artifacts — scripts, payloads, captured response bodies, temporary data — **must be written to this intent's dedicated work directory " + runDir + "** (already created automatically; just write with relative paths there — no manual mkdir needed) — **do NOT write to /tmp, do NOT use other absolute paths**."
+	return "\n\n**Intermediate artifact output rules**: all intermediate artifacts — scripts, payloads, captured response bodies, temporary data — **must be written to this intent's dedicated work directory " + runDir + "** (already created automatically; just write with relative paths there — no manual mkdir needed) — **do NOT write to /tmp, do NOT use other absolute paths**." +
+		"\nRead output from your session's background tasks through TaskOutput using the task ID. Treat the server-managed output files as private."
 }
 
 // mainRunDirName is the run directory of a task's main agent and planner.
@@ -411,7 +425,7 @@ func cachePrefixEnabled() bool {
 
 // workerSystemParts splits workerSystem at the first per-intent volatile
 // segment (workerArtifactSpec(runDir)) without reordering any text:
-//   - staticPart  = body + untrustedContentTail + workerTrafficBlock
+//   - staticPart  = body + untrustedContentTail + workerTrafficBlock + workerEnvironmentBlock
 //   - dynamicHead = workerArtifactSpec(runDir) + noiseProfileBlock
 //
 // Custom DB prompts that reference {{.Now}} remain volatile inside staticPart.
@@ -420,7 +434,7 @@ func workerSystemParts(proxyAddr, caCert, dataDir, runDir string) (staticPart, d
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	staticPart = body + untrustedContentTail(body) + workerTrafficBlock(caCert != "")
+	staticPart = body + untrustedContentTail(body) + workerTrafficBlock(caCert != "") + workerEnvironmentBlock()
 	dynamicHead = workerArtifactSpec(runDir) + noiseProfileBlock()
 	return staticPart, dynamicHead
 }

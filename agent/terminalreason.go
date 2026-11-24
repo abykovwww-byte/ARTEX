@@ -34,7 +34,7 @@ var reasonHint = map[harness.TerminalReason]string{
 	harness.ReasonCompleted:         "the model ended this turn normally but left no text summary; facts and assets are as recorded by this turn's tool calls",
 	harness.ReasonMaxTurns:          "reached the turn cap (MaxTurns): the SDK ran the wrap-up and wrote back facts and assets; the intent is marked exhausted so the planner can continue in a different direction, rather than being treated as failed",
 	harness.ReasonTimeout:           "reached this run's wall-clock budget (MaxDuration): at the deadline the in-flight tool is interrupted and the run settles in place, writing back the identified facts and assets; the intent is marked exhausted",
-	harness.ReasonModelError:        "the model or API call failed (network, auth, rate limiting, provider 5xx, etc.) and retries were exhausted, so the intent is marked blocked — a transport-layer failure means this intent was barely explored; check its execution (get_worker_trace) before deciding whether to redispatch or switch tactics",
+	harness.ReasonModelError:        "the model or API call failed and retries were exhausted, so the intent is marked blocked. Review the underlying error and execution trace to see where it stopped and what was already recorded",
 	harness.ReasonBlockingLimit:     "context length hit the hard cap and the request was intercepted before being sent; narrow the intent's granularity or compress tool output",
 	harness.ReasonPromptTooLong:     "the prompt was too long and context-compaction retries were exhausted; cannot continue",
 	harness.ReasonImageError:        "the current model does not support this turn's multimodal content; switch to a vision-capable model or avoid returning images from tools",
