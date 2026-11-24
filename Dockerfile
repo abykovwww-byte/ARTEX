@@ -30,6 +30,22 @@ FROM --platform=$BUILDPLATFORM golang:1.26.11-bookworm@sha256:dc40a13b61304647ed
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+# Local hardening (NOT upstream): norma's WebFetch hard-codes
+# `User-Agent: norma/0.4` on every fetch it makes. That string names the agent
+# framework to the target (or third party) whenever the request does not go
+# through the recording proxy and its rewrite rule: capture switched off, the
+# tool's own direct retry, or a deployment without the proxy. Patch the pinned
+# module inside the build cache before compiling, and fail the build if the
+# pinned version no longer contains the literal, so a dependency bump cannot
+# silently reintroduce it. The UA a caller sees is the same desktop Chrome
+# identity the runtime rewrite rule applies; nothing named ARTEX/norma ships.
+RUN set -eux; \
+    f="$(find "$(go env GOMODCACHE)" -type f -path '*norma@v0.4.11/tool/webfetch.go' | head -n 1)"; \
+    test -n "$f"; \
+    chmod u+w "$f"; \
+    grep -q '"norma/0.4"' "$f"; \
+    sed -i 's|"norma/0\.4"|"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"|g' "$f"; \
+    ! grep -q 'norma/0.4' "$f"
 COPY . .
 # Reuse the frontend built above; build.sh skips its own frontend step.
 COPY --from=web /src/web/out ./server/webui/dist
@@ -213,6 +229,24 @@ RUN set -eux; \
     templates="$(nuclei -tl -silent -duc | wc -l)"; \
     echo "nuclei templates visible at build time: $templates"; \
     test "$templates" -gt 10000
+
+# Local hardening (NOT upstream): every ProjectDiscovery binary below asks
+# https://api.pdtm.sh at startup for a newer release and sends a stable
+# machine_id plus go_version/os/utm_source=docker тАФ a durable installation
+# fingerprint of this host to a third party. `-duc` disables that check. A config
+# file under the executor's HOME is not enough: that HOME is a writable volume
+# and katana has no config file at all, so wrap the binaries. The real binary
+# stays beside the wrapper as <name>.real; arguments pass through unchanged.
+RUN set -eux; \
+    for tool in nuclei httpx subfinder katana; do \
+      mv "/usr/local/bin/$tool" "/usr/local/bin/$tool.real"; \
+      printf '#!/bin/sh\nexec /usr/local/bin/%s.real -duc "$@"\n' "$tool" > "/usr/local/bin/$tool"; \
+      chmod 0755 "/usr/local/bin/$tool"; \
+    done; \
+    nuclei -version >/dev/null; httpx -version >/dev/null; \
+    subfinder -version >/dev/null; katana -version >/dev/null; \
+    grep -q -- '-duc' /usr/local/bin/nuclei /usr/local/bin/httpx \
+      /usr/local/bin/subfinder /usr/local/bin/katana
 
 # bbot recursive recon orchestrator (#117): blacklanternsecurity/bbot, AGPL-3.0
 # (same license as ARTEX; standalone CLI dependency, not linked code). Pinned
