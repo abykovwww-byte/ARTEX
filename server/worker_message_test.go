@@ -5,6 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Autumn-27/artex/agent"
 )
 
 // After the worker-message rework, the human-message path no longer goes through
@@ -29,6 +32,31 @@ func TestControlWorkConflictsWhenNoWorkRegistered(t *testing.T) {
 	if !errors.Is(err, errWorkControlConflict) {
 		t.Fatalf("pause with no work = %v, want errWorkControlConflict", err)
 	}
+}
+
+func TestPauseForOperatorDoesNotWaitForItsOwnWorker(t *testing.T) {
+	e := NewEngine(nil)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	e.work[42] = &workExecution{cancel: cancel, done: make(chan error, 1)}
+	done := make(chan error, 1)
+	go func() { done <- e.pauseForOperator(42) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ask_operator waited for the worker that is still executing the tool")
+	}
+	if !errors.Is(context.Cause(ctx), agent.AbortWaitingForOperator) {
+		t.Fatalf("wrong pause cause: %v", context.Cause(ctx))
+	}
+	action, complete := e.detachWork(42)
+	if action != "pause" {
+		t.Fatalf("operator wait action = %q, want pause", action)
+	}
+	complete(nil)
 }
 
 // validWorkerMessageRequestID gates the idempotency token; keep its charset stable

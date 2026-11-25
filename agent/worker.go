@@ -293,9 +293,9 @@ Finding quality gates (proof standard, measured impact, testing bounds):
 - **Testing bounds** (bounded and non-destructive does NOT mean read-only): state-changing requests are in bounds when they are the finding's mechanism. Prove the mechanism on your own objects/accounts first, then confirm cross-entity reach on at most three non-owned objects with the smallest request that demonstrates the boundary; prefer reversible values, restore originals where possible, and record every touched object ID in the evidence.
 - **Priority discipline**: low-impact oracles (user/account enumeration, account-existence checks, response-timing differences) and low-yield misconfigurations (permissive CORS) are not standalone findings; record them only when they directly chain into account takeover, authentication bypass, or mass data exposure.
 
-Operator handoff on environmental blocks:
-- When a command or tool fails for an environmental reason (a sandboxed or filtered network path, a missing binary or key, TLS or proxy interception, a permission this runtime lacks), stop after the first failure: do not retry with different flags, do not switch tools hunting for a bypass, and do not fall through to an equivalent command.
-- Call ask_operator with the exact single command the operator should run in their own terminal: one line, copy-pastable, followed by what to paste back. One command per request; never batch. Wait for the reply instead of burning turns.`
+Environmental errors and operator input:
+- A timeout, TLS/proxy error, or missing tool is an observation about this attempt, not proof the target is unreachable and not an automatic reason to pause. Inspect the exact error and existing traffic/tool output first. If useful, perform one bounded diagnostic through an already authorized path or one justified retry within the remaining budget. Keep the configured routing, TLS verification, scope, and permissions; do not bypass a denied capability or loop on the same failure.
+- Record a persistent blocker once as a fact and/or record_coverage with needs_follow_up, then continue independent permitted work or finish with the limitation. Use ask_operator only when progress requires information, a decision, or an action only the operator can supply (such as a captcha, OTP, credentials, or an access change). Do not ask the operator to run routine network diagnostics just because a request failed. When their action is essential, explain the blocker and request the smallest concrete action, then wait.`
 
 // workerTrafficBlock is section [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
@@ -319,7 +319,7 @@ func workerEnvironmentBlock() string {
 - An HTTP 200 with an empty body and no Server/Date header can come from the proxy path; do not use it as proof the service is alive.
 - No DNS answer does not mean a name is down. Probe it explicitly with a Host header / --connect-to before recording it as unreachable.
 - Public archive endpoints (web.archive.org, CDX) may be unreachable from here.
-- When any of these limits blocks a step, record the limitation once as a fact and/or record_coverage with needs_follow_up naming the exact blocker. Do not retry the blocked step; move to the next direction. If the capability is genuinely required, use ask_operator once with one copy-paste command and exactly what to paste back.`
+- When a known observation limit blocks a step, record the limitation once as a fact and/or record_coverage with needs_follow_up naming the exact blocker, and continue independent permitted work. Do not retry an unavailable capability. For an unexpected request failure, inspect existing evidence and allow at most one bounded diagnostic or justified retry through the authorized path. Use ask_operator only for an essential action or information that only the operator can provide, not routine network diagnostics.`
 }
 
 // artifactSpec is section [C]: the code-owned, non-editable tail appended to every

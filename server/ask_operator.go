@@ -31,13 +31,13 @@ var askOperatorImageExt = map[string]bool{".png": true, ".jpg": true, ".jpeg": t
 // resumes the run with the answer as the next input (#41).
 func (s *Server) toolAskOperator() actool.CoreTool {
 	return wrTool("ask_operator",
-		"Ask the human operator for input you cannot obtain yourself (a captcha solution, an email/SMS OTP code, a 2FA answer, a decision, or an action only they can perform). The question appears in this intent's chat for the operator, optionally with a screenshot, and this intent then pauses; the operator's reply resumes this run with the answer as your next input. Ask precisely, and only when you are genuinely blocked. When the block is environmental (a sandboxed or filtered network path, a missing binary or key, a proxy or TLS failure this runtime cannot fix), do not retry or work around it: include in the question the exact single command the operator should run in their own terminal, as one copy-pastable line, plus what to paste back, then wait.",
+		"Ask the human operator for essential input you cannot obtain yourself (a captcha solution, an email/SMS OTP code, a 2FA answer, a decision, or an action only they can perform). The question appears in this intent's chat, optionally with a screenshot, and the intent pauses; the operator's reply resumes it with the saved history and the answer. A timeout, TLS/proxy error, or missing tool alone does not require operator input: inspect existing evidence, use at most one bounded diagnostic or justified retry through an authorized path, and record persistent limitations while continuing independent permitted work. Keep routing, TLS verification, scope, and permissions. Ask only when an essential action or information is available solely from the operator; explain the blocker and request the smallest concrete action.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"question": map[string]any{
 					"type":        "string",
-					"description": "What you need from the operator, precisely (e.g. 'enter the 6-digit code sent to x@y', 'solve the captcha in the attached screenshot'). For environmental blocks: the exact single command they should run in their own terminal (one line, copy-pastable) and what to paste back.",
+					"description": "The essential information, decision, or action only the operator can supply (e.g. 'enter the 6-digit code sent to x@y', 'solve the captcha in the attached screenshot'). Explain the blocker and the smallest concrete action needed. Do not hand routine network diagnostics to the operator after a request failure.",
 				},
 				"image_path": map[string]any{
 					"type":        "string",
@@ -74,12 +74,12 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 			node := ri.IntentID
 			act.NodeID = &node
 			s.engine.emitActivity(t, act)
-			// The control call runs on a detached context: pausing may cancel the
-			// run's context, and the pause bookkeeping itself must complete.
-			if _, err := s.applyIntentControl(context.Background(), t, ri.IntentID, "pause", firstLine(q, 120), ""); err != nil {
+			// This tool runs inside the work being paused: request cancellation
+			// without waiting for this same tool to exit. The worker settles paused.
+			if err := s.engine.pauseForOperator(ri.IntentID); err != nil {
 				return actool.Errorf("Error: question delivered but pausing the intent failed: " + err.Error()), nil
 			}
-			return actool.Text("Question delivered to the operator. This intent is pausing now: finish your current step, record everything you already know as facts, and stop. The operator's reply will resume this run and arrive as your next input."), nil
+			return actool.Text("Question delivered. This intent is waiting for operator input. The operator's reply resumes it with the saved history and the answer."), nil
 		})
 }
 

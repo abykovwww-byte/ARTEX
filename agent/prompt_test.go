@@ -28,8 +28,11 @@ func TestEnvironmentBlocksSurvivePromptOverrides(t *testing.T) {
 					t.Errorf("environment prompts missing %q", fact)
 				}
 			}
-			if !strings.Contains(worker, "record_coverage with needs_follow_up") || !strings.Contains(worker, "Do not retry") {
+			if !strings.Contains(worker, "record_coverage with needs_follow_up") || !strings.Contains(worker, "one bounded diagnostic or justified retry") {
 				t.Fatal("worker missing environmental block handling")
+			}
+			if strings.Contains(worker, "stop after the first failure") || strings.Contains(worker, "with one copy-paste command") {
+				t.Fatal("worker still requires routine diagnostics to be handed to the operator")
 			}
 		}
 		if !strings.Contains(planner, "Never re-dispatch") || !strings.Contains(planner, "emit exactly one intent") {

@@ -3,17 +3,16 @@ package agent
 import "strings"
 import "testing"
 
-// The operator-handoff discipline must stay in the executor agents' default
-// seeds: environmental failures stop the retry loop and become one
-// copy-pastable ask_operator command.
+// Both executor seeds keep routine diagnostics inside the authorized runtime
+// and reserve a blocking handoff for input only the operator can supply.
 func TestPromptSeedsCarryOperatorHandoff(t *testing.T) {
 	for name, tmpl := range BuiltinPromptSeeds() {
 		switch name {
 		case "worker", "pentest":
 			for _, marker := range []string{
-				"Operator handoff on environmental blocks",
-				"one line, copy-pastable",
-				"never batch",
+				"one bounded diagnostic",
+				"Keep the configured routing, TLS verification, scope, and permissions",
+				"Do not ask the operator to run routine network diagnostics",
 			} {
 				if !strings.Contains(tmpl, marker) {
 					t.Errorf("%s seed missing operator-handoff marker %q", name, marker)

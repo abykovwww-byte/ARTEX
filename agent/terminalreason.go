@@ -64,7 +64,7 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 
 	var sum string
 	if aborted {
-		_, short, _, ok := AbortReason(ctx)
+		code, short, _, ok := AbortReason(ctx)
 		if !ok {
 			short = "cancellation reason unavailable"
 		}
@@ -76,6 +76,9 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 			stage = "the tool execution stage"
 		}
 		sum = "(run interrupted: " + short + "; stopped during " + stage + progressSuffix(term, tr) + ", unfinished)"
+		if code == "waiting_for_operator" {
+			sum = "(waiting for operator input; reply in this intent to resume with the saved history)"
+		}
 	} else if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		sum = "(run budget cap reached (" + string(reason) + "); wrap-up wrote back facts" + progressSuffix(term, tr) + "; no text summary this run)"
 	} else if refused {

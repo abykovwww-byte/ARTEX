@@ -492,35 +492,21 @@ func (e *Engine) detachWork(intentID int64) (action string, complete func(error)
 // worker has fully stopped writing. Cancellation cleanup is performed by the API
 // handler after this returns; pause state is committed by runWorkerStep itself.
 func (e *Engine) ControlWork(ctx context.Context, intentID int64, action string) error {
-	if action != "pause" && action != "cancel" {
-		return fmt.Errorf("unsupported work action %q", action)
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	e.workMu.Lock()
-	run := e.work[intentID]
-	if run == nil {
-		e.workMu.Unlock()
-		return fmt.Errorf("%w: intent %d currently has no running work (it may have finished or was never claimed)", errWorkControlConflict, intentID)
-	}
-	if run.action != "" {
-		e.workMu.Unlock()
-		return fmt.Errorf("%w: intent %d is executing the %s operation", errWorkControlConflict, intentID, run.action)
-	}
-	run.action = action
-	done := run.done
 	cause := error(agent.AbortWorkPausedByUser)
 	if action == "cancel" {
 		cause = agent.AbortWorkCancelledByUser
 	}
-	run.cancel(cause)
-	e.workMu.Unlock()
-
+	run, err := e.requestWorkControl(intentID, action, cause)
+	if err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	timer := time.NewTimer(workControlWaitTimeout)
 	defer timer.Stop()
 	select {
-	case err := <-done:
+	case err := <-run.done:
 		return err
 	case <-ctx.Done():
 		e.releaseWorkControl(intentID, run, action)
@@ -529,6 +515,33 @@ func (e *Engine) ControlWork(ctx context.Context, intentID int64, action string)
 		e.releaseWorkControl(intentID, run, action)
 		return fmt.Errorf("waiting for intent %d %s to settle: %w", intentID, action, context.DeadlineExceeded)
 	}
+}
+
+// pauseForOperator is called by the worker itself, so it must not wait for that
+// worker to finish. Settlement uses the same pause path as manual control.
+func (e *Engine) pauseForOperator(intentID int64) error {
+	_, err := e.requestWorkControl(intentID, "pause", agent.AbortWaitingForOperator)
+	return err
+}
+
+func (e *Engine) requestWorkControl(intentID int64, action string, cause error) (*workExecution, error) {
+	if action != "pause" && action != "cancel" {
+		return nil, fmt.Errorf("unsupported work action %q", action)
+	}
+	e.workMu.Lock()
+	run := e.work[intentID]
+	if run == nil {
+		e.workMu.Unlock()
+		return nil, fmt.Errorf("%w: intent %d currently has no running work (it may have finished or was never claimed)", errWorkControlConflict, intentID)
+	}
+	if run.action != "" {
+		e.workMu.Unlock()
+		return nil, fmt.Errorf("%w: intent %d is executing the %s operation", errWorkControlConflict, intentID, run.action)
+	}
+	run.action = action
+	run.cancel(cause)
+	e.workMu.Unlock()
+	return run, nil
 }
 
 // releaseWorkControl drops only this caller's reservation after its wait is
@@ -1300,7 +1313,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// still settles the stopped run into a recoverable state.
 	if action == "" {
 		switch {
-		case errors.Is(workCause, agent.AbortWorkPausedByUser):
+		case errors.Is(workCause, agent.AbortWorkPausedByUser), errors.Is(workCause, agent.AbortWaitingForOperator):
 			action = "pause"
 		case errors.Is(workCause, agent.AbortWorkCancelledByUser):
 			action = "cancel"

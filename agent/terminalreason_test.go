@@ -84,6 +84,20 @@ func TestTerminalTextAbortedNamesCauseAndHangingTool(t *testing.T) {
 	}
 }
 
+func TestTerminalTextWaitingForOperator(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(AbortWaitingForOperator)
+	summary, detail := terminalText(ctx, &harness.Terminal{
+		Reason: harness.ReasonAbortedTools, Err: context.Canceled,
+	}, &runTrace{})
+	if !strings.Contains(summary, "waiting for operator input") || !strings.Contains(summary, "saved history") {
+		t.Fatalf("operator wait lost its resume instructions: %q", summary)
+	}
+	if strings.Contains(detail, "user paused") || !strings.Contains(detail, "waiting_for_operator") {
+		t.Fatalf("operator wait reported as manual pause: %s", detail)
+	}
+}
+
 func TestTerminalTextDirectContextCancellationKeepsCause(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(AbortChatStoppedByUser)
@@ -141,7 +155,7 @@ func TestAbortCausesAreWellFormed(t *testing.T) {
 	all := []*AbortCause{
 		AbortPausedByUser, AbortPausedByOrchestrator, AbortTaskDeleted, AbortPausedOnReload,
 		AbortGoalMet, AbortSettleDrainTimeout, AbortKilledByPlanner, AbortWorkPausedByUser,
-		AbortWorkCancelledByUser, AbortWorkClaimLost, AbortWorkFinished, AbortPausedRaceGuard,
+		AbortWorkCancelledByUser, AbortWaitingForOperator, AbortWorkClaimLost, AbortWorkFinished, AbortPausedRaceGuard,
 		AbortChatStoppedByUser, AbortChatPausedWithTask, AbortChatTurnFinished,
 		AbortShutdown, AbortRunHardTimeout,
 	}

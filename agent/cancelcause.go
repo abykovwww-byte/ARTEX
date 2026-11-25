@@ -44,7 +44,9 @@ var (
 	AbortKilledByPlanner = cause("killed_by_planner", "The planner terminated this intent",
 		"The planner actively terminated this intent via kill_work, usually meaning the direction went off track or is no longer worth pursuing; the intent is marked stopped and is not automatically re-claimed")
 	AbortWorkPausedByUser = cause("work_paused_by_user", "The user paused this Worker intent",
-		"The user paused a running Worker. This call was cancelled and the intent turned paused; all recorded intents, facts, vulnerabilities, and activity records are kept, and execution restarts from scratch after resuming")
+		"The user paused a running Worker. This call was cancelled and the intent turned paused; recorded outputs and conversation history are kept and used when the intent resumes")
+	AbortWaitingForOperator = cause("waiting_for_operator", "Waiting for operator input",
+		"The Worker requested essential operator input via ask_operator and paused itself. The question, recorded outputs, and conversation history are kept; the operator's reply resumes the intent with that history and the answer")
 	AbortWorkCancelledByUser = cause("work_cancelled_by_user", "The user deleted this Worker intent",
 		"The user deleted a running Worker. This call was cancelled; after the Worker exits the write area, the server handles the intent per the user-chosen deletion mode — soft delete only marks it deleted and keeps all outputs, hard delete cascades to remove the intent and the downstream nodes supported only by it")
 	AbortWorkClaimLost = cause("work_claim_lost", "Another Worker took this intent over",
