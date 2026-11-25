@@ -4565,6 +4565,14 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 		_, _ = t.Store.AddNode(db.KindHint, map[string]any{"text": text}, 0, "active", "human", nil)
 		return "Hint recorded; the planner will read it next time: " + text
 	default:
+		resolution, err := s.resolveTaskRoleLLM(t, "mainagent")
+		reason := resolution.Reason
+		if err != nil {
+			reason = err.Error()
+		}
+		if reason == "" {
+			reason = "main agent unavailable"
+		}
 		assetCounts, _ := s.m.Assets().CountsByType()
 		assets := 0
 		for _, c := range assetCounts {
@@ -4572,7 +4580,7 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 		}
 		fnd, _ := t.Store.ListByKind(db.KindFinding, 1000)
 		fr, _ := t.Store.Frontier(1000)
-		return fmt.Sprintf("(rule mode, no LLM configured) Current situation: assets %d, open intents %d, confirmed findings %d.\nAvailable commands: \"intent ...\" injects an intent, \"hint ...\" leaves the planner a hint.", assets, len(fr), len(fnd))
+		return fmt.Sprintf("(rule mode, LLM unavailable: %s) Current situation: assets %d, open intents %d, confirmed findings %d.\nAvailable commands: \"intent ...\" injects an intent, \"hint ...\" leaves the planner a hint.", reason, assets, len(fr), len(fnd))
 	}
 }
 
