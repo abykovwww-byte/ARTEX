@@ -1,15 +1,22 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"iter"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 )
 
 // A worker's image_path is read from its run directory tasks/<id>/i<N>; the copy is
@@ -400,14 +407,76 @@ func TestAskOperatorActivityTag(t *testing.T) {
 	}
 }
 
-// The tool description must tell agents what to do on environmental blocks:
-// hand the operator one copy-pastable command instead of retrying or hunting
-// for bypasses. Pattern adapted from bug-bounty-hunting-prompts (MIT).
+// Routine environmental diagnostics do not require a blocking human handoff.
 func TestAskOperatorEnvHandoffGuidance(t *testing.T) {
 	desc := (&Server{}).toolAskOperator().Description()
-	for _, marker := range []string{"copy-pastable", "do not retry or work around"} {
+	for _, marker := range []string{"one bounded diagnostic", "continuing independent permitted work", "available solely from the operator"} {
 		if !strings.Contains(desc, marker) {
 			t.Errorf("ask_operator description missing env-handoff marker %q", marker)
+		}
+	}
+	if strings.Contains(desc, "do not retry or work around") {
+		t.Fatal("tool still requires immediate operator handoff on any environment error")
+	}
+}
+
+type operatorResumeProbe struct {
+	toolScript
+	messages []llm.Message
+}
+
+func (p *operatorResumeProbe) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	p.messages = req.Messages
+	return p.toolScript.Stream(ctx, req)
+}
+
+func (p *operatorResumeProbe) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	return accumulateStreamForTest(ctx, p.Stream, req)
+}
+
+func TestAskOperatorPausesAndResumesSavedHistory(t *testing.T) {
+	g := newGateServer(t)
+	task := g.newTask(t, db.TaskCreateOptions{})
+	id, err := task.Store.AddIntent(map[string]any{"summary": "request a human decision"}, 1, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, token := g.s.engine.claimNext(task, "work#1")
+	if intent == nil || intent.ID != id {
+		t.Fatal("intent was not claimed")
+	}
+	p := &operatorResumeProbe{toolScript: toolScript{
+		calls:   []scriptedCall{{"ask_operator", `{"question":"Choose the maintenance window"}`}},
+		results: make(chan string, 16),
+	}}
+	tx := transcript.NewStore(t.TempDir())
+	worker := agent.NewWorker(p, "test-model", g.m.dir, tx, 0, 4, g.s.toolAskOperator())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.s.engine.runIntent(context.Background(), task, "work#1", worker, intent, token, "", "")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ask_operator did not settle promptly")
+	}
+	node, err := task.Store.GetNode(id)
+	if err != nil || node == nil || node.State != "paused" {
+		t.Fatalf("operator request did not pause the intent: node=%+v err=%v", node, err)
+	}
+	if _, err := g.s.applyIntentControl(context.Background(), task, id, "resume", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	intent, token = g.s.engine.claimNext(task, "work#1")
+	if intent == nil {
+		t.Fatal("paused intent could not be reclaimed")
+	}
+	g.s.engine.runIntent(context.Background(), task, "work#1", worker, intent, token, "operator-reply", "Use the evening window")
+	history, _ := json.Marshal(p.messages)
+	for _, want := range []string{"Choose the maintenance window", "Use the evening window"} {
+		if !strings.Contains(string(history), want) {
+			t.Fatalf("resumed model request lost %q: %s", want, history)
 		}
 	}
 }
