@@ -68,7 +68,11 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 	state := t.llmStateSnapshot()
 	if len(state.ProfileIDs) > 0 {
 		if state.ActiveID == nil {
-			return taskLLMResolution{Source: "task_chain", Reason: "task LLM profile chain quota exhausted"}, nil
+			reason := "task LLM profile chain exhausted"
+			if state.FailoverReason != "" {
+				reason += ": " + state.FailoverReason
+			}
+			return taskLLMResolution{Source: "task_chain", Reason: reason}, nil
 		}
 		p, err := s.m.pg.ProfileByID(*state.ActiveID)
 		if err != nil {

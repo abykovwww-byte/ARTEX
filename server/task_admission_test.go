@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -568,6 +569,50 @@ func TestTaskLLMResolutionRejectsInvalidExplicitProfile(t *testing.T) {
 	}
 	if got.Available || got.Source != "task_chain" || got.ProfileID == nil || *got.ProfileID != profileID {
 		t.Fatalf("resolution=%+v, want unavailable explicit task profile", got)
+	}
+}
+
+func TestExhaustedTaskPreservesModelErrorInRuntimeAndChat(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		db.SkipPGUnavailable(t, err)
+	}
+	defer m.Close()
+	profileID, err := m.pg.SaveProfile(&db.LLMProfile{
+		Name:   fmt.Sprintf("exhausted-reason-%d", time.Now().UnixNano()),
+		Format: "anthropic", Model: "k3.1-pro", APIKey: "test-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := m.CreateTaskWithOptions("exhausted reason", "show the model error", db.TaskCreateOptions{
+		LLMProfileIDs: []int64{profileID},
+	})
+	if err != nil {
+		_ = m.pg.DeleteProfile(profileID)
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{})
+		_ = m.pg.DeleteProfile(profileID)
+	}()
+	const reason = "anthropic: status 400: K3.1 Pro does not support disabled thinking mode"
+	taskID, _ := strconv.ParseInt(task.ID, 10, 64)
+	if _, err := m.pg.MarkTaskLLMProfileQuotaExhausted(taskID, profileID, reason); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{m: m}
+	runtime := &taskLLMRuntime{s: s, taskID: task.ID, agentKey: "mainagent"}
+	if _, err := runtime.currentFor(context.Background()); !isTaskLLMChainExhausted(err) || !strings.Contains(err.Error(), reason) {
+		t.Fatalf("runtime error=%v, want chain exhaustion with original model error", err)
+	}
+	resolved, err := s.resolveTaskRoleLLM(task, "mainagent")
+	if err != nil || resolved.Available || !strings.Contains(resolved.Reason, reason) {
+		t.Fatalf("resolution=%+v err=%v, want original model error", resolved, err)
+	}
+	reply := s.fallbackChat(task, "status")
+	if !strings.Contains(reply, reason) || strings.Contains(reply, "no LLM configured") || strings.Contains(reply, "quota exhausted") {
+		t.Fatalf("fallback hid the model error: %s", reply)
 	}
 }
 

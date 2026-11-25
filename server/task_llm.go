@@ -239,7 +239,11 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 	}
 	if len(pt.LLMProfileIDs) > 0 {
 		if pt.ActiveLLMProfileID == nil {
-			return sel, &taskLLMError{taskID: r.taskID, chainExhausted: true, cause: errors.New("all selected profiles are quota exhausted")}
+			reason := "all selected LLM profiles are unavailable"
+			if pt.LLMFailoverReason != "" {
+				reason += ": " + pt.LLMFailoverReason
+			}
+			return sel, &taskLLMError{taskID: r.taskID, chainExhausted: true, cause: errors.New(reason)}
 		}
 		sel.profileID = *pt.ActiveLLMProfileID
 		if pin, ok := llmProfilePinFrom(ctx); ok && pin != sel.profileID {
@@ -927,7 +931,7 @@ func (s *Server) emitTaskLLMTransition(t *Task, transition db.TaskLLMTransition,
 	}
 	mode := "automatic"
 	kind := "llm_switch"
-	summary := fmt.Sprintf("%s quota exhausted", llmAuditProfileLabel(previous))
+	summary := fmt.Sprintf("%s unavailable: %v", llmAuditProfileLabel(previous), cause)
 	if transition.NextProfileID != nil {
 		summary += fmt.Sprintf(", subsequent calls switched to %s", llmAuditProfileLabel(next))
 	} else {
