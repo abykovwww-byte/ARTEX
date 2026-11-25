@@ -1088,6 +1088,7 @@ export interface NoiseStatus {
 // NotificationFilter is a channel's filter conditions; all fields are optional, absent means no filtering.
 // The backend validates none of them: a malformed config counts as "matched" (better to over-push than to miss).
 export interface NotificationFilter {
+  event_kinds?: string[]; // omitted preserves legacy finding notifications
   min_severity?: string; // "" | low | medium | high | critical
   task_ids?: number[]; // empty = no limit; non-empty requires overlap with the vulnerability's task
   asset_ids?: number[]; // empty = no limit; non-empty requires overlap with the vulnerability's anchored assets

@@ -1,12 +1,15 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/Autumn-27/artex/notify"
 )
 
 // Task is a row in the task registry (1:1 with an exploration).
@@ -518,13 +521,32 @@ func (d *DB) SetQueued(id int64, queued bool) error {
 // stable); moving back to a non-terminal state clears it, so a re-run has no stale
 // finish time (and no stale end_reason).
 func (d *DB) SetStatus(id int64, status string) error {
-	_, err := d.Exec(`
+	ctx := context.Background()
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var previous string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id=$1 FOR UPDATE`, id).Scan(&previous); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 UPDATE tasks
    SET status = $1,
        completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, now()) ELSE NULL END,
        end_reason = CASE WHEN $1 IN ('done','failed','timeout') THEN end_reason ELSE '' END
  WHERE id = $2`, status, id)
-	return err
+	if err != nil {
+		return err
+	}
+	if previous != status {
+		recordTaskStatusEventTx(ctx, tx, id, status)
+	}
+	return tx.Commit()
 }
 
 // SetTerminalStatusGuarded sets a terminal status only when the task is NOT already
@@ -534,7 +556,13 @@ UPDATE tasks
 // endReason is stored with the status in the same statement (empty = normal end,
 // EndReasonBudget = run-budget wrap-up); a losing writer stores nothing.
 func (d *DB) SetTerminalStatusGuarded(id int64, status, endReason string) (won bool, err error) {
-	res, err := d.Exec(`
+	ctx := context.Background()
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
 UPDATE tasks
    SET status = $1,
        completed_at = COALESCE(completed_at, now()),
@@ -544,7 +572,32 @@ UPDATE tasks
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		recordTaskStatusEventTx(ctx, tx, id, status)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
 	return n > 0, nil
+}
+
+func recordTaskStatusEventTx(ctx context.Context, tx *sql.Tx, id int64, status string) {
+	kind, title := "", ""
+	switch status {
+	case "done":
+		kind, title = notify.EventTaskCompleted, "✅ ARTEX: кейс #%d завершён"
+	case "failed":
+		kind, title = notify.EventTaskFailed, "❌ ARTEX: кейс #%d завершился с ошибкой"
+	case "timeout":
+		kind, title = notify.EventTaskFailed, "⏱ ARTEX: у кейса #%d истёк лимит времени"
+	default:
+		return
+	}
+	// Send only platform metadata; goals, task descriptions, credentials and
+	// target responses never enter this notification snapshot.
+	RecordNotificationEventTx(ctx, tx, kind, 0, notify.Snapshot{
+		Kind: kind, TaskID: id, Name: fmt.Sprintf(title, id), Summary: "Статус: " + status,
+	})
 }
 
 // ClearRunEndReason drops the end_reason of a task that is running again (a
@@ -701,6 +754,9 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 		return result, err
 	}
 	if err := settleTaskTargetRequests(tx, id); err != nil {
+		return result, err
+	}
+	if _, err := tx.Exec(`DELETE FROM notification_events WHERE finding_id=0 AND kind IN ('task_completed','task_failed') AND snapshot->>'task_id'=$1`, strconv.FormatInt(id, 10)); err != nil {
 		return result, err
 	}
 	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=$1`, id); err != nil {

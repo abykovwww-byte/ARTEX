@@ -2724,5 +2724,12 @@
   "Search company…": "Şirket ara…",
   "Failed to load companies": "Şirketler yüklenemedi",
   "No company found": "Şirket bulunamadı",
-  "Manage companies": "Şirketleri yönet"
+  "Manage companies": "Şirketleri yönet",
+  "Select at least one notification event": "En az bir bildirim olayı seçin",
+  "New findings": "Yeni bulgular",
+  "Task completed": "Görev tamamlandı",
+  "Task failed or timed out": "Görev başarısız oldu veya zaman aşımına uğradı",
+  "Finding status changes": "Bulgu durum değişiklikleri",
+  "Push findings and task status updates to your channels · each channel has its own delivery timing and event filters": "Bulguları ve görev durumu güncellemelerini kanallarınıza gönderin · her kanalın kendi teslimat zamanı ve olay filtreleri vardır",
+  "Task filters apply to all events. Severity, asset and type filters apply to findings.": "Görev filtreleri tüm olaylara uygulanır. Önem derecesi, varlık ve tür filtreleri bulgulara uygulanır."
 }

@@ -17,6 +17,18 @@ import (
 // singleMsg builds a single-send message with quotes and newlines. Deliberately
 // uses a title/summary containing `"` and `\n`: exactly the input that most
 // easily produces invalid JSON from template interpolation.
+func TestTelegramTaskMessageAndDigest(t *testing.T) {
+	it := Item{Kind: EventTaskCompleted, Name: "ARTEX task #42 completed", Summary: "Status: done", DetailURL: "https://artex.local/function/tasks/detail?id=42"}
+	text, kept := telegramHTML(Message{Items: []Item{it}})
+	if kept != 1 || !strings.Contains(text, it.Name) || !strings.Contains(text, it.DetailURL) || strings.Contains(text, "[]") {
+		t.Fatalf("invalid task notification: %s", text)
+	}
+	text, kept = telegramHTML(Message{Items: []Item{it}, Batch: true})
+	if kept != 1 || !strings.Contains(text, "ARTEX digest") || strings.Contains(text, "Vulnerability") {
+		t.Fatalf("task digest was labeled as vulnerabilities: %s", text)
+	}
+}
+
 func singleMsg() Message {
 	return Message{
 		Items: []Item{{

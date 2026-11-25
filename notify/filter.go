@@ -12,6 +12,9 @@ import (
 // field means "no filtering" — which is exactly the fallback semantics for
 // malformed configuration; see ParseFilter.
 type Filter struct {
+	// EventKinds opts into task events and can restrict a channel to those events.
+	// Omitted preserves the existing finding-only behavior.
+	EventKinds []string `json:"event_kinds,omitempty"`
 	// MinSeverity is the minimum severity threshold (low/medium/high/critical);
 	// empty = no threshold.
 	MinSeverity string `json:"min_severity"`
@@ -76,6 +79,14 @@ func ValidMinSeverity(s string) bool {
 // follows ParseFilter's lenient semantics, so bad values already present in
 // historical data do not make the whole channel unreadable.
 func (f Filter) Validate() error {
+	if f.EventKinds != nil && len(f.EventKinds) == 0 {
+		return fmt.Errorf("select at least one notification event")
+	}
+	for _, kind := range f.EventKinds {
+		if kind != EventFindingCreated && kind != EventFindingStatusChanged && !IsTaskEvent(kind) {
+			return fmt.Errorf("invalid notification event %q", kind)
+		}
+	}
 	if !ValidMinSeverity(f.MinSeverity) {
 		return fmt.Errorf("invalid min_severity %q; valid values: low / medium / high / critical, or empty for no threshold", f.MinSeverity)
 	}
@@ -89,11 +100,19 @@ func (f Filter) Validate() error {
 // anomaly is treated as "match". Order of checks: event kind → severity
 // threshold → task/asset scope → vulnerability class keywords.
 func Match(f Filter, s Snapshot) bool {
+	if f.EventKinds != nil && !slices.Contains(f.EventKinds, s.Kind) {
+		return false
+	}
+	if IsTaskEvent(s.Kind) {
+		// Task lifecycle events require explicit opt-in. Vulnerability severity,
+		// class and asset filters have no meaning for these events.
+		return slices.Contains(f.EventKinds, s.Kind) && (len(f.TaskIDs) == 0 || slices.Contains(f.TaskIDs, s.TaskID))
+	}
 	// Status-change events are only received by channels that explicitly opted
 	// in. Default is off, because the vast majority of users expect "push" to
 	// mean "a new vulnerability was found", not a running log of every status
 	// transition.
-	if s.Kind == EventFindingStatusChanged && !f.OnStatusChange {
+	if s.Kind == EventFindingStatusChanged && !f.OnStatusChange && !slices.Contains(f.EventKinds, s.Kind) {
 		return false
 	}
 	if !AtLeast(s.Severity, f.MinSeverity) {

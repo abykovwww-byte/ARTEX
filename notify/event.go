@@ -1,7 +1,7 @@
 package notify
 
 // Snapshot is the contract for the notification_events.snapshot JSONB column.
-// The writer is the vulnerability persistence transaction in the db layer; the
+// The writers are finding and task-status transactions in the db layer; the
 // readers are the delivery engine and filter matching in the server layer. The
 // definition lives in this package because it is the payload of the
 // "notification domain": db only serializes it and does not understand the fields.
@@ -13,7 +13,7 @@ package notify
 // low" content. As a bonus, fan-out and rendering do not need to JOIN the
 // findings/tasks/assets tables.
 type Snapshot struct {
-	// Event kind: finding_created / finding_status_changed
+	// Event kind: finding_created / finding_status_changed / task_completed / task_failed
 	Kind      string  `json:"kind"`
 	FindingID int64   `json:"finding_id"`
 	TaskID    int64   `json:"task_id"`
@@ -29,6 +29,7 @@ type Snapshot struct {
 
 // Item is a single vulnerability to be pushed, rendered by channels.
 type Item struct {
+	Kind      string
 	FindingID int64
 	Name      string
 	VulnClass string

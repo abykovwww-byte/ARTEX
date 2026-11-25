@@ -2,6 +2,26 @@ package notify
 
 import "testing"
 
+func TestTaskEventsRequireExplicitSelection(t *testing.T) {
+	event := Snapshot{Kind: EventTaskCompleted, TaskID: 42}
+	if Match(Filter{}, event) {
+		t.Fatal("legacy channels must not start receiving task events")
+	}
+	f := Filter{EventKinds: []string{EventTaskCompleted, EventTaskFailed}, MinSeverity: "critical"}
+	if !Match(f, event) || Match(f, Snapshot{Kind: EventFindingCreated, Severity: "critical"}) {
+		t.Fatal("task-only channel matched the wrong events")
+	}
+	f.TaskIDs = []int64{43}
+	if Match(f, event) {
+		t.Fatal("task scope filter was ignored")
+	}
+	for _, kinds := range [][]string{{}, {"task_typo"}} {
+		if err := (Filter{EventKinds: kinds}).Validate(); err == nil {
+			t.Fatalf("accepted invalid event selection: %v", kinds)
+		}
+	}
+}
+
 func TestParseFilterMalformedFallsBackToMatchAll(t *testing.T) {
 	// Malformed JSON, empty input, fields of the wrong type — all must degrade to
 	// a zero-value Filter, i.e. "no filtering". This invariant is where "rather

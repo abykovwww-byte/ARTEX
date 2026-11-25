@@ -136,6 +136,7 @@ export type ChannelForm = {
   taskIDsText: string;
   assetIDsText: string;
   onStatusChange: boolean;
+  eventKinds: string[];
 };
 
 export const emptyForm = (kind: string): ChannelForm => ({
@@ -151,6 +152,7 @@ export const emptyForm = (kind: string): ChannelForm => ({
   taskIDsText: "",
   assetIDsText: "",
   onStatusChange: false,
+  eventKinds: ["finding_created"],
 });
 
 // parseKV parses a "KEY=VALUE per line" textarea.
