@@ -2724,5 +2724,12 @@
   "Search company…": "搜索企业…",
   "Failed to load companies": "加载企业失败",
   "No company found": "未找到企业",
-  "Manage companies": "管理企业"
+  "Manage companies": "管理企业",
+  "Select at least one notification event": "请至少选择一种通知事件",
+  "New findings": "新发现",
+  "Task completed": "任务已完成",
+  "Task failed or timed out": "任务失败或超时",
+  "Finding status changes": "发现状态变更",
+  "Push findings and task status updates to your channels · each channel has its own delivery timing and event filters": "将发现和任务状态更新推送到通知渠道 · 每个渠道都有独立的发送时间和事件筛选条件",
+  "Task filters apply to all events. Severity, asset and type filters apply to findings.": "任务筛选条件适用于所有事件；严重程度、资产和类型筛选条件仅适用于发现。"
 }
