@@ -32,7 +32,13 @@ const (
 const (
 	EventFindingCreated       = "finding_created"
 	EventFindingStatusChanged = "finding_status_changed"
+	EventTaskCompleted        = "task_completed"
+	EventTaskFailed           = "task_failed"
 )
+
+func IsTaskEvent(kind string) bool {
+	return kind == EventTaskCompleted || kind == EventTaskFailed
+}
 
 // InitKind is the fallback value for an empty kind in config.
 const InitKind = KindDingTalk

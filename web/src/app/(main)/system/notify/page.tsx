@@ -125,7 +125,8 @@ export default function NotifyPage() {
       excludeText: (f.vulnclass_exclude ?? []).join("\n"),
       taskIDsText: (f.task_ids ?? []).join(","),
       assetIDsText: (f.asset_ids ?? []).join(","),
-      onStatusChange: f.on_status_change ?? false,
+      onStatusChange: f.event_kinds ? f.event_kinds.includes("finding_status_changed") : (f.on_status_change ?? false),
+      eventKinds: f.event_kinds ?? ["finding_created"],
     });
     setOpen(true);
   }
@@ -177,6 +178,10 @@ export default function NotifyPage() {
 
   function buildFilter(): NotificationFilter {
     return {
+      event_kinds: [
+        ...form.eventKinds.filter((kind) => kind !== "finding_status_changed"),
+        ...(form.onStatusChange ? ["finding_status_changed"] : []),
+      ],
       min_severity: form.minSeverity || undefined,
       vulnclass_include: parseKeywords(form.includeText),
       vulnclass_exclude: parseKeywords(form.excludeText),
@@ -187,6 +192,10 @@ export default function NotifyPage() {
   }
 
   async function saveForm() {
+    if (buildFilter().event_kinds?.length === 0) {
+      toast.error(t("Select at least one notification event"));
+      return;
+    }
     if (!form.name.trim()) {
       toast.error(t("Please fill in a channel name"));
       return;
@@ -304,7 +313,7 @@ export default function NotifyPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t("Notifications")}</h1>
           <p className="text-muted-foreground text-sm">
-            {t("Push findings to DingTalk / Feishu / WeCom and other channels · each channel has its own delivery timing and filter rules")}
+            {t("Push findings and task status updates to your channels · each channel has its own delivery timing and event filters")}
           </p>
         </div>
         {meta && (
@@ -638,8 +647,26 @@ export default function NotifyPage() {
                       value={form.assetIDsText}
                       onChange={(e) => setF({ assetIDsText: e.target.value })}
                     />
-                    <p className="text-muted-foreground text-xs">{t("Empty task/asset = no restriction; when filled, the finding must intersect them.")}</p>
+                    <p className="text-muted-foreground text-xs">{t("Task filters apply to all events. Severity, asset and type filters apply to findings.")}</p>
                   </div>
+                  {[
+                    ["finding_created", "New findings"],
+                    ["task_completed", "Task completed"],
+                    ["task_failed", "Task failed or timed out"],
+                  ].map(([kind, label]) => (
+                    <div key={kind} className="flex items-center gap-2 text-sm">
+                      <Switch
+                        checked={form.eventKinds.includes(kind)}
+                        onCheckedChange={(checked) => setF({
+                          eventKinds: checked
+                            ? [...form.eventKinds, kind]
+                            : form.eventKinds.filter((event) => event !== kind),
+                        })}
+                        aria-label={t(label)}
+                      />
+                      {t(label)}
+                    </div>
+                  ))}
                   <div className="flex items-center gap-2 text-sm">
                     <Switch
                       checked={form.onStatusChange}

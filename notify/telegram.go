@@ -167,6 +167,9 @@ const telegramReservedRunes = 160
 // telegramBatchLine renders one entry of a digest (unescaped; the caller escapes
 // it uniformly).
 func telegramBatchLine(it Item, idx int, lim Limits) string {
+	if IsTaskEvent(it.Kind) {
+		return fmt.Sprintf("%d. %s", idx, it.Title())
+	}
 	if a := assetLine(it.Assets, lim.AssetsShown); a != "" {
 		return fmt.Sprintf("%d. %s · %s — %s", idx, SeverityLabel(it.Severity), it.Title(), a)
 	}
@@ -179,6 +182,12 @@ func telegramBatchLine(it Item, idx int, lim Limits) string {
 // batch.
 func telegramBatchTitle(m Message, items []Item, total int) string {
 	title := fmt.Sprintf("Vulnerability digest · %d total", total)
+	for _, it := range m.Items {
+		if IsTaskEvent(it.Kind) {
+			title = fmt.Sprintf("ARTEX digest · %d total", total)
+			break
+		}
+	}
 	if extra := total - len(items); extra > 0 {
 		title += fmt.Sprintf(" (showing the first %d, %d more in the next message)", len(items), extra)
 	}

@@ -94,6 +94,9 @@ func markdownTitle(m Message) string {
 		return "Vulnerability notification"
 	}
 	it := m.Items[0]
+	if IsTaskEvent(it.Kind) {
+		return OneLine(it.Title(), 0)
+	}
 	return fmt.Sprintf("[%s] %s", SeverityLabel(it.Severity), OneLine(it.Title(), 0))
 }
 

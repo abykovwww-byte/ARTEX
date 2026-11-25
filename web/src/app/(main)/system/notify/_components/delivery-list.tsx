@@ -127,9 +127,15 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={toneClasses[statusMeta("severity", d.severity).tone]}>
-                        {statusMeta("severity", d.severity).label}
-                      </Badge>
+                      {d.event_kind.startsWith("task_") ? (
+                        <Badge variant="outline">
+                          {d.event_kind === "task_completed" ? t("Task completed") : t("Task failed or timed out")}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className={toneClasses[statusMeta("severity", d.severity).tone]}>
+                          {statusMeta("severity", d.severity).label}
+                        </Badge>
+                      )}
                       <span className="truncate text-sm">{d.title || t("(untitled)")}</span>
                       {d.event_kind === "finding_status_changed" && (
                         <Badge variant="outline" className="shrink-0">
