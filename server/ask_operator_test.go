@@ -465,6 +465,22 @@ func TestAskOperatorPausesAndResumesSavedHistory(t *testing.T) {
 	if err != nil || node == nil || node.State != "paused" {
 		t.Fatalf("operator request did not pause the intent: node=%+v err=%v", node, err)
 	}
+	activities, _, err := task.Store.ActivityList(&id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundWait := false
+	for _, a := range activities {
+		if a.Kind == "result" {
+			foundWait = true
+			if a.IsError || !strings.Contains(a.Summary, "waiting for operator input") || !strings.Contains(a.Detail, "waiting_for_operator") {
+				t.Fatalf("operator wait was reported as a failure: %+v", a)
+			}
+		}
+	}
+	if !foundWait {
+		t.Fatal("operator wait result was not recorded")
+	}
 	if _, err := g.s.applyIntentControl(context.Background(), task, id, "resume", "", ""); err != nil {
 		t.Fatal(err)
 	}
