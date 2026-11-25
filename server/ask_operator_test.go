@@ -473,7 +473,11 @@ func TestAskOperatorPausesAndResumesSavedHistory(t *testing.T) {
 	for _, a := range activities {
 		if a.Kind == "result" {
 			foundWait = true
-			if a.IsError || !strings.Contains(a.Summary, "waiting for operator input") || !strings.Contains(a.Detail, "waiting_for_operator") {
+			detail, err := task.Store.ActivityDetail(a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.IsError || !strings.Contains(a.Summary, "waiting for operator input") || !strings.Contains(detail, "waiting_for_operator") {
 				t.Fatalf("operator wait was reported as a failure: %+v", a)
 			}
 		}
