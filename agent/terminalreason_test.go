@@ -149,6 +149,9 @@ func TestTerminalTextNonAbortReasons(t *testing.T) {
 	if !strings.Contains(summary, "model_error") || !strings.Contains(detail, "429 rate limited") {
 		t.Fatalf("model_error detail incomplete: %q\n%s", summary, detail)
 	}
+	if strings.Contains(detail, "marked blocked") || strings.Contains(detail, "retries were exhausted") {
+		t.Fatalf("model_error claims an unobserved state transition: %s", detail)
+	}
 }
 
 func TestAbortCausesAreWellFormed(t *testing.T) {
