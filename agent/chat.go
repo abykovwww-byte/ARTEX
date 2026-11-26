@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +221,17 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	}
 	// experimental feature: when enabled, noa takes over context compression (archive centralized under <workDir>/noa/<SessionID>, persistent).
 	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
+	// Keep retries inside one model turn, preserving the session and its budgets.
+	// Stage the response until it is complete so a dropped tool-call stream cannot
+	// execute an incomplete command or replay an already executed tool.
+	opts.Deps.CallModel = func(callCtx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+		return recoverChatStream(callCtx, c.prov.Stream, req, func(a db.Activity) {
+			if emit != nil {
+				a.Worker = agentKey
+				emit(a)
+			}
+		})
+	}
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()
@@ -239,4 +253,64 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		}
 	})
 	return text, err
+}
+
+func recoverChatStream(ctx context.Context, stream func(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error], req llm.CompletionRequest, emit func(db.Activity)) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		var failedUsage llm.Usage
+		for attempt := 0; ; attempt++ {
+			var events []llm.StreamEvent
+			var streamErr error
+			acc := llm.NewAccumulator()
+			for event, err := range stream(ctx, req) {
+				if err != nil {
+					streamErr = err
+					break
+				}
+				events = append(events, event)
+				acc.Add(event)
+			}
+			if streamErr == nil {
+				for _, event := range events {
+					if !yield(event, nil) {
+						return
+					}
+				}
+				if failedUsage != (llm.Usage{}) {
+					yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: failedUsage}, nil)
+				}
+				return
+			}
+			failedUsage.Add(acc.Usage)
+			eof := errors.Is(streamErr, io.ErrUnexpectedEOF) || errors.Is(streamErr, io.EOF) || strings.Contains(strings.ToLower(streamErr.Error()), "unexpected eof")
+			if eof && attempt < 2 && ctx.Err() == nil {
+				if emit != nil {
+					text := fmt.Sprintf("Model connection interrupted (%v). Reconnecting, attempt %d/2.", streamErr, attempt+1)
+					emit(db.Activity{Kind: "text", Summary: text, Detail: text})
+				}
+				timer := time.NewTimer(500 * time.Millisecond * time.Duration(1<<attempt))
+				select {
+				case <-timer.C:
+					continue
+				case <-ctx.Done():
+					timer.Stop()
+					streamErr = ctx.Err()
+				}
+			}
+			// Preserve partial prose and measured usage after recovery fails. Tool
+			// blocks stay uncommitted, including calls with truncated arguments.
+			for _, event := range events {
+				if event.Type == llm.SETextDelta || event.Type == llm.SEThinkingDelta {
+					if !yield(event, nil) {
+						return
+					}
+				}
+			}
+			if failedUsage != (llm.Usage{}) && !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: failedUsage}, nil) {
+				return
+			}
+			yield(llm.StreamEvent{}, streamErr)
+			return
+		}
+	}
 }
